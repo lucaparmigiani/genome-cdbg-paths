@@ -12,6 +12,9 @@ It is compatible with graphs produced by tools such as **Bifrost**, **GGCAT**, *
 
 # Quick Start
 
+Precompiled binaries for Linux are available on the [Releases](https://github.com/lucaparmigiani/genome-cdbg-paths/releases) page.
+Alternatively you can build it.
+
 ## Install
 
 ### Dependencies
