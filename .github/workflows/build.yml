@@ -7,16 +7,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write    # <-- allow creating releases
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux2014_x86_64
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y g++ make zlib1g-dev
+        run: yum install -y gcc gcc-c++ make zlib-devel
 
       - name: Build
         run: make
