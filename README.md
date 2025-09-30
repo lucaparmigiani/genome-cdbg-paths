@@ -23,7 +23,7 @@ It is compatible with graphs produced by tools such as **Bifrost**, **GGCAT**, *
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/yourname/genome-cdbg-paths.git
+git clone https://github.com/lucaparmigiani/genome-cdbg-paths
 cd genome-cdbg-paths
 make
 ```
