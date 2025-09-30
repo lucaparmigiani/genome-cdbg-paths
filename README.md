@@ -17,8 +17,8 @@ It is compatible with graphs produced by tools such as **Bifrost**, **GGCAT**, *
 ### Dependencies
 
 - **C++17 compiler**   
-- **OpenMP** (parallelism)  
-- **zlib** (GFA/FASTA I/O)
+- **OpenMP**   
+- **zlib** 
 
 Clone the repository and build:
 
