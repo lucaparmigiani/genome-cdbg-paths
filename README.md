@@ -16,7 +16,7 @@ It is compatible with graphs produced by tools such as **Bifrost**, **GGCAT**, *
 
 ### Dependencies
 
-- **C++17 compiler**   
+- **C++17**   
 - **OpenMP**   
 - **zlib** 
 
