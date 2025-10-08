@@ -41,7 +41,6 @@ genome-cdbg-paths <k> <graph.gfa> <genome.fasta> [more.fasta ...] [options]
 
 Options:
 
-* `--break`:  split paths at non-ACGT characters
 * `-t, --threads <N>`: number of threads (default: all available cores)
 
 ---
@@ -75,9 +74,8 @@ cat paths.txt >> example/graph.gfa
 Path names follow this convention:
 
 ```
-file_name#id_sequence#split
+file_name#comment_name
 ```
 
 * `file_name`: the source FASTA file name
-* `id_sequence`: 0-based index of the sequence within the FASTA file
-* `split`: index of the segment if `--break` was used (splits a sequence into multiple paths at non-ACGT characters)
+* `comment_name`: name up to first space. Example: `>NC_000913.3 Escherichia coli str. K-12 substr. MG1655, complete genome ` -> `comment_name` = `NC_000913.3`

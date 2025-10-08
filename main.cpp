@@ -1,4 +1,7 @@
 #include <iostream>
+#include <string.h>
+#include <vector>
+#include <cstring>
 #include <stdint.h>
 #include <fstream>
 #include <sstream>
@@ -8,15 +11,47 @@
 #include "vec.hpp"
 #include "str.hpp"
 #include "kmer.hpp"
+#include "kseq.h"
 
 /* Assumptions:
  * - GFA comes from a compacted de Bruijn graph (eg, Bifrost)
  * - this means that every k-mer appears *once*
- * - filename of fasta are different, since I use that as the name 
- *   of the path
  */
 
-#define BUFLEN      16384
+#define MCALLOC(ptr, len) ((ptr) = (__typeof__(ptr))calloc((len), sizeof(*(ptr))))
+#define MMALLOC(ptr, len) ((ptr) = (__typeof__(ptr))malloc((len) * sizeof(*(ptr))))
+#define MREALLOC(ptr, len) ((ptr) = (__typeof__(ptr))realloc((ptr), (len) * sizeof(*(ptr))))
+
+KSEQ_INIT(gzFile, gzread)
+
+typedef struct fasta_t {
+    size_t nk;
+    std::vector<size_t> lens;
+    std::vector<char*> sequences;
+    std::vector<std::string> names;
+} fasta_t;
+
+fasta_t read_fasta(const char *fn) {
+    kseq_t *ks;
+	gzFile fp;
+    fasta_t fa;
+    memset(&fa, 0, sizeof(fasta_t));
+
+	if ((fp = gzopen(fn, "r")) == 0) return fa;
+    ks = kseq_init(fp);
+
+    int ret;
+    while ((ret = kseq_read(ks)) >= 0) {
+        size_t l = ret; // get len sequence
+        char* seq = (char*) malloc(l);
+        memcpy(seq, ks->seq.s, l);
+        fa.sequences.push_back(seq);
+        fa.names.push_back(std::string(ks->name.s, ks->name.s+ks->name.l));
+        fa.lens.push_back(l);
+        fa.nk += l;
+    }
+    return fa;
+}
 
 void error(const char *msg) {
     std::cerr << "Error: " << msg << '\n' << std::flush;
@@ -61,160 +96,83 @@ void read_gfa(const char* file, Vec<str>& nodes){
     std::cerr << "ok\n" << std::flush;
 }
 
-void reconstruct_genome(kmertable_t *kmer_table, std::string dna, int k, Vec<str>& nodes) {
-    char bases[] = {'T','G','C','A'};
-    kmer_t kmer = 0;
-    int len = 0;
-    kmer_t mask = (1ULL << (2*k)) - 1;
-
-    uint64_t last_rid = UINT64_MAX;
-    int last_strand = 2;
-    Vec<char> strands;
-    Vec<char> small_dna;
-    for (uint64_t i = 0; i < dna.size(); i++) {
-        unsigned char c = nt_2_bits[dna[i]];
-        if (c < 4) {
-            kmer = (kmer << 2 | c) & mask;
-            if (len+1 < k) { len++; std::cout << dna[i]; }
-            else {
-                small_dna.clean();
-                auto alg = kmer_table->align(kmer);
-                if (!alg.strand) {
-                    std::cout << nodes[alg.rid][alg.pos];
-                    strands.push('+');
-                }
-                else {
-                    //You take the start of the kmer not the end
-                    //query TAATCCTGCGAATGGCAACACAAAGCCGATG
-                    //                             pos-k+1                       pos
-                    //                             *                             *
-                    //rc                           CATCGGCTTTGTGTTGCCATTCGCAGGATTA
-                    //   AATATCTGATCGCCCTGACCAACAAACATCGGCTTTGTGTTGCCATTCGCAGGATTAA
-                    std::cout << bases[nt_2_bits[(char)nodes[alg.rid][alg.pos-k+1]]];
-                    strands.push('-');
-                }
-            }
-        } else {
-            std::cout << dna[i];
-            len = 0, kmer = 0;
-        }
-    }
-    std::cout << '\n' << std::flush;
-
-}
-
-void print_path_string(kmertable_t *kmer_table, std::string dna, int k) {
-    kmer_t kmer = 0;
-    int len = 0;
-    kmer_t mask = (1ULL << (2*k)) - 1;
-
-    std::cout << "path\t" << std::flush;
-    uint64_t last_rid = UINT64_MAX;
-    int last_strand = 2;
-    for (uint64_t i = 0; i < dna.size(); i++) {
-        unsigned char c = nt_2_bits[dna[i]];
-        if (c < 4) {
-            kmer = (kmer << 2 | c) & mask;
-            if (len+1 < k) len++;
-            else {
-                auto alg = kmer_table->align(kmer);
-                if (alg.rid != last_rid || alg.strand != last_strand) {
-                    last_rid = alg.rid;
-                    last_strand = alg.strand;
-                    std::cout << alg.rid << (alg.strand ? '-' : '+') << ',' << std::flush;
-                }
-            }
-        } else len = 0, kmer = 0;
-    }
-    std::cout << "\t*\n" << std::flush;
-}
-
-void print_path_fasta(kmertable_t *kmer_table, std::string filepath, int k, bool break_path_at_non_ACGT_character) {
+void gfa2gff(kmertable_t *kmer_table, std::string filepath, int k, Vec<str>& nodes) {
     std::string filename = remove_extension(base_name(filepath));
+    //std::string filename = base_name(filepath);
     std::cerr << "printing " << filename << '\n' << std::flush;
 
-    kmer_t kmer = 0;
-    int len = 0;
+    fasta_t fa = read_fasta(filepath.c_str());
+
     kmer_t mask = (1ULL << (2*k)) - 1;
-    uint64_t last_rid = UINT64_MAX;
-    uint64_t last_pos = UINT64_MAX;
-    bool empty_path = true;
-    int last_strand = 2;
-    int counter_comments = -1;
-    int contiguous_string = 0;
 
-    gzFile file;
-    static char buf[BUFLEN];
-    if ((file = gzopen(filepath.c_str(), "rb")) == 0) error("opening file");
-    
-    bool is_first_node = false;
-    for (;;) {
-        int buf_len = gzread(file, buf, sizeof(buf));
+    for (int z = 0; z < fa.lens.size(); z++) {
+        kmer_t kmer = 0;
+        int len = 0;
+        uint64_t last_rid = UINT64_MAX;
+        uint64_t last_pos = UINT64_MAX;
+        int last_strand = 2;
+        uint64_t start = 0;
+        uint64_t end = 0;
+        char* sequence = fa.sequences[z];
+        size_t len_sequence = fa.lens[z];
+        std::string seqname = fa.names[z];
+        int64_t i = 0;
+        int64_t j = 0;
 
-        if (buf_len < 0) error("reading gzip file");
-        else if (buf_len == 0) goto finish;
+        std::cout << "P\t"<< filename << "#" << seqname << '\t' << std::flush;
 
-        int z = 0;
-        while (z < buf_len) {
-            if (buf[z] == '>' || buf[z] == '@') {
-                do {
-                    z++;
-                    if (z >= buf_len) {
-                        buf_len = gzread(file, buf, sizeof(buf));
-                        if (buf_len < 0) error("reading gzip file");
-                        else if (buf_len == 0) goto finish;
-                        z = 0;
+        bool is_first_node = true;
+        while (i < len_sequence) {
+            unsigned char c = nt_2_bits[sequence[i]];
+            //std::cerr << "out" << sequence[i] << " " << i << "\n";
+            if (c < 4) {
+                kmer = (kmer << 2 | c) & mask;
+                if (len+1 < k) len++;
+                else {
+                    auto alg = kmer_table->align(kmer);
+                    if (alg.pos == UINT32_MAX) {
+                        std::cerr << "\nError: kmer " << bits2kmer(kmer, k) << " not found" << '\n' << std::flush;
+                        exit(1);
                     }
-                } while (buf[z] != '\n');
-                counter_comments++;
-                contiguous_string = 0;
-                if (counter_comments) std::cout << "\t*\n" << std::flush;
-                std::cout << "P\t"<< filename << "#" << counter_comments << "#" << contiguous_string << '\t' << std::flush;
-                is_first_node = true;
-                z++;
+                    str node = nodes[alg.rid];
+                    size_t len_node = node.n;
+                    start = i - k + 1;
+                    if (!alg.strand) {
+                        j = alg.pos;
+
+                        while (i+1 < len_sequence && j+1 < len_node && 
+                                nt_2_bits[sequence[i+1]] == nt_2_bits[node[j+1]]){
+                            i++;
+                            j++;
+                            c = nt_2_bits[sequence[i]];
+                            kmer = (kmer << 2 | c) & mask;
+                        }
+                        end = i;
+                    } else {
+                        j = alg.pos - k + 1;
+
+                        while (i+1 < len_sequence && j-1 >= 0 && nt_2_bits[sequence[i+1]] < 4 &&
+                                ((uint64_t)(3-nt_2_bits[sequence[i+1]])&3ULL) == (uint64_t)nt_2_bits[node[j-1]]){
+                            i++;
+                            j--;
+                            c = nt_2_bits[sequence[i]];
+                            kmer = (kmer << 2 | c) & mask;
+                        }
+                        end = i;
+                    }
+                    if (!is_first_node) std::cout << ',';
+                    is_first_node = false;
+                    std::cout << alg.rid << (alg.strand? '-' : '+');
+                }
+            } 
+            if (nt_2_bits[sequence[i]] == 4) {
+                start = 0;
                 len = 0, kmer = 0;
             }
-
-            if (z < buf_len && buf[z] != '\n') {
-                unsigned char c = nt_2_bits[buf[z]];
-                if (c < 4) {
-                    kmer = (kmer << 2 | c) & mask;
-                    if (len+1 < k) len++;
-                    else {
-                        auto alg = kmer_table->align(kmer);
-                        if (alg.pos == UINT32_MAX) {
-                            std::cerr << "\nError: kmer " << bits2kmer(kmer, k) << " not found" << '\n' << std::flush;
-                            exit(1);
-                        }
-                        if (alg.rid != last_rid || alg.strand != last_strand || (!alg.strand && alg.pos <= last_pos) || (alg.strand && alg.pos >= last_pos)) {
-                            last_rid = alg.rid;
-                            last_strand = alg.strand;
-                            last_pos = alg.pos;
-                            if (!is_first_node) std::cout << ',';
-                            is_first_node = false;
-                            std::cout << alg.rid << (alg.strand ? '-' : '+');
-                            empty_path = false;
-                        }
-                    }
-                } else { 
-                    if (!empty_path && break_path_at_non_ACGT_character) { 
-                        contiguous_string++;
-                        std::cout << "\t*\n" << std::flush;
-                        std::cout << "P\t"<< filename << "#" << counter_comments << "#" << contiguous_string << '\t' << std::flush;
-                        is_first_node = true;
-                        empty_path = true;
-                    }
-                    len = 0, kmer = 0;
-                }
-            }
-            z++;
+            i++;
         }
+        std::cout << "\t*\n" << std::flush;
     }
-
-finish:
-    if (gzclose(file) != Z_OK) error("closing file");
-
-    std::cout << "\t*\n" << std::flush;
 }
 
 void read_file(const char* file, std::string& fa){
@@ -237,32 +195,6 @@ void read_file(const char* file, std::string& fa){
     std::cerr << "complete\n" << std::flush;
 }
 
-void local_test() {
-    std::string gfa_file = "/home/luca/@focus/util/print_paths_cdbg/test/graph_k31.gfa";
-    Vec<str> nodes;
-    read_gfa(gfa_file.c_str(), nodes);
-    std::filesystem::path folder_path = "/home/luca/@focus/util/print_paths_cdbg/test/oneline";
-    int k = 31;
-    kmertable_t *kmer_table = count_kmers(nodes, k);
-    std::cerr << "Finished creating hashtable of kmers: " << kmer_table->num_kmers << " kmers found" << '\n';
-    for (const auto& entry : std::filesystem::directory_iterator(folder_path)) {
-        if (!std::filesystem::is_regular_file(entry)) continue;
-        std::filesystem::path input_file = entry.path();
-        std::filesystem::path output_file = input_file;
-        if (input_file.extension() != ".fa") continue;
-        output_file.replace_extension(".res");
-        std::streambuf* orig_buf = std::cout.rdbuf();
-        std::ofstream outfile(output_file);
-        std::cout.rdbuf(outfile.rdbuf());
-
-        std::string dna;
-        read_file(input_file.c_str(), dna);
-        reconstruct_genome(kmer_table, dna, k, nodes);
-
-        std::cout.rdbuf(orig_buf);
-    }
-}
-
 int main(int argc, char **argv) {
     Vec<str> nodes;
 
@@ -275,13 +207,10 @@ int main(int argc, char **argv) {
                   << "  <fasta>   Path to at least one FASTA file.\n"
                   << "            You may provide multiple FASTA files.\n\n"
                   << "Options:\n"
-                  << "  --break               Split paths at non-ACGT characters.\n"
                   << "  -t, --threads <num>   Number of threads to use (default: number of cores).\n"
                   << "  -h, --help            Show this help message.\n";
         exit(1);
     }
-
-    bool break_path_at_non_ACGT_character = false;
 
     Vec<char*> args;
     args.push(argv[0]); 
@@ -291,9 +220,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
 
-        if (arg == "--break") {
-            break_path_at_non_ACGT_character = true;
-        } else if (arg == "--threads" || arg == "-t") {
+        if (arg == "--threads" || arg == "-t") {
             if (i + 1 < argc) {
                 NUM_THREADS = std::stoi(argv[++i]); // consume next argument
             } else {
@@ -313,13 +240,13 @@ int main(int argc, char **argv) {
     kmertable_t *kmer_table = count_kmers(nodes, k);
     std::cerr << "Finished creating hashtable of kmers: " << kmer_table->num_kmers << " kmers found" << '\n';
     
-    for (int i = 0; i < nodes.size(); i++) nodes[i].clean();
-    nodes.clean();
-
     for (int i = 3; i < args.size(); i++) {
         std::cerr << "["<<i-2 << "/" << args.size()-3<<"] " << std::flush;
-        print_path_fasta(kmer_table, args[i], k, break_path_at_non_ACGT_character);
+        gfa2gff(kmer_table, args[i], k, nodes);
     }
+
+    for (int i = 0; i < nodes.size(); i++) nodes[i].clean();
+    nodes.clean();
 
     return 0;
 }
